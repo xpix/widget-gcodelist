@@ -947,7 +947,7 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
             // display additional content
             if(additionalType == 'url'){
 console.log('----> showToolChangeModal:', additionalType, additionalContent);
-                $('.com-chilipeppr-widget-gcode-toolchange-additionalContent').removeClass('hidden').load(additionalContent);
+                $('.com-chilipeppr-widget-gcode-toolchange-additionalContent').removeClass('hidden').load('externalContent #externalContent');
             }
             $(window).trigger('resize');
             var line = this.currentLine;
