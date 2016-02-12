@@ -105,7 +105,7 @@ cprequire_test(["inline:com-chilipeppr-widget-gcode"], function (gcode) {
     //gcode.init({lineNumbersOnByDefault: true});
     //gcode.showOptionsModal();
     //gcode.setupInfiniteScroll();
-    gcode.showToolChangeModal('url', 'https://www.google.de/');
+    gcode.showToolChangeModal('url', 'http://stackoverflow.com/questions/12938386/load-external-div-content-to-my-page-div #hireme');
 
     //var txt = gcode.fileLines.join('\n');
     //window.open('data:text/csv;charset=utf-8,' + escape(txt));
@@ -681,9 +681,11 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
             $('#com-chilipeppr-widget-gcode-body').addClass('gcode-short-mode');
             $('.com-chilipeppr-widget-gcode-toolchange').removeClass('hidden');
             // display additional content
-            if(additionalType == 'url')
-                $('#com-chilipeppr-widget-gcode-toolchange-additionalContent')
-                    .removeClass('hidden').load(additionalContent);
+            if(additionalType == 'url'){
+console.log('----> showToolChangeModal:', additionalType, additionalContent);
+                $('.com-chilipeppr-widget-gcode-toolchange-additionalContent').removeClass('hidden');
+                $('.com-chilipeppr-widget-gcode-toolchange-additionalContent').load(additionalContent);
+            }
             $(window).trigger('resize');
             var line = this.currentLine;
             this.getXyzCoordsForLine(line, function(pos) {
@@ -747,9 +749,11 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
             this.obj3d = obj3d;
             var x,y,z;
             var indx = this.getXyzCoordsForLineRecv3dObjLine - 1;
-            x = obj3d.userData.lines[indx].p2.x;
-            y = obj3d.userData.lines[indx].p2.y;
-            z = obj3d.userData.lines[indx].p2.z;
+            if(obj3d.userData.lines[indx] == 'object'){
+                x = obj3d.userData.lines[indx].p2.x;
+                y = obj3d.userData.lines[indx].p2.y;
+                z = obj3d.userData.lines[indx].p2.z;
+            }
 
             // unsub so we don't get anymore callbacks on this
             chilipeppr.unsubscribe("/com-chilipeppr-widget-3dviewer/recv3dObject", this.getXyzCoordsForLineRecv3dObj);
