@@ -667,7 +667,7 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
         },
         isInToolChangeMode: false, // track whether we're showing tool change div
         toolChangeRepositionCmd: null, // gcode to reposition to prior location before tool change (in case they jog)
-        showToolChangeModal: function() {
+        showToolChangeModal: function(additionalType, additionalContent) {
             if ($('#com-chilipeppr-widget-gcode-option-pauseOnM6').is(':checked'))
                 $('#com-chilipeppr-widget-gcode-option-pauseOnM6-alt').prop('checked', true);
             else
@@ -679,6 +679,10 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
             //gcode-short-mode
             $('#com-chilipeppr-widget-gcode-body').addClass('gcode-short-mode');
             $('.com-chilipeppr-widget-gcode-toolchange').removeClass('hidden');
+            // display additional content
+            if(additionalContent == 'url')
+                $('#com-chilipeppr-widget-gcode-toolchange-additionalContent')
+                    .removeClass('hidden').load(additionalContent);
             $(window).trigger('resize');
             var line = this.currentLine;
             this.getXyzCoordsForLine(line, function(pos) {
@@ -2394,7 +2398,9 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                     
                     // see if M6 tool change command & user wants to pause on M6
                     if (linegcode.match(/M0?6/i) && this.options.pauseOnM6) {
-                        this.showToolChangeModal();
+                        // Search for a url or widget entry
+                        var parsed = linegcode.match(/(url|inline):(\S+)\-\-/);
+                        this.showToolChangeModal(parsed[1], parsed[2]); // type, content
                     }
                     
                     // see if chilipeppr_pause command
