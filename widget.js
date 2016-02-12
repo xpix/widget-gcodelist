@@ -105,6 +105,7 @@ cprequire_test(["inline:com-chilipeppr-widget-gcode"], function (gcode) {
     //gcode.init({lineNumbersOnByDefault: true});
     //gcode.showOptionsModal();
     //gcode.setupInfiniteScroll();
+    gcode.showToolChangeModal('url', 'https://www.google.de/');
 
     //var txt = gcode.fileLines.join('\n');
     //window.open('data:text/csv;charset=utf-8,' + escape(txt));
@@ -141,10 +142,10 @@ cprequire_test(["inline:com-chilipeppr-widget-gcode"], function (gcode) {
             chilipeppr.publish("/com-chilipeppr-widget-serialport/onError", { Id: "g3" });   
         }, 7000);
     }
-    testOnQueue();
-    testOnWrite();
-    testOnComplete();
-    testOnExecute();
+    //testOnQueue();
+    //testOnWrite();
+    //testOnComplete();
+    //testOnExecute();
     //testOnError();
 
     var testPublishGcode = function() {
@@ -680,7 +681,7 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
             $('#com-chilipeppr-widget-gcode-body').addClass('gcode-short-mode');
             $('.com-chilipeppr-widget-gcode-toolchange').removeClass('hidden');
             // display additional content
-            if(additionalContent == 'url')
+            if(additionalType == 'url')
                 $('#com-chilipeppr-widget-gcode-toolchange-additionalContent')
                     .removeClass('hidden').load(additionalContent);
             $(window).trigger('resize');
