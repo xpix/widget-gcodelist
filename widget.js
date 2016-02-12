@@ -105,7 +105,7 @@ cprequire_test(["inline:com-chilipeppr-widget-gcode"], function (gcode) {
     //gcode.init({lineNumbersOnByDefault: true});
     //gcode.showOptionsModal();
     //gcode.setupInfiniteScroll();
-    gcode.showToolChangeModal('url', 'http://stackoverflow.com/questions/12938386/load-external-div-content-to-my-page-div #hireme');
+    gcode.showToolChangeModal('url', '/test_external.html #externalContent');
 
     //var txt = gcode.fileLines.join('\n');
     //window.open('data:text/csv;charset=utf-8,' + escape(txt));
@@ -683,8 +683,7 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
             // display additional content
             if(additionalType == 'url'){
 console.log('----> showToolChangeModal:', additionalType, additionalContent);
-                $('.com-chilipeppr-widget-gcode-toolchange-additionalContent').removeClass('hidden');
-                $('.com-chilipeppr-widget-gcode-toolchange-additionalContent').load(additionalContent);
+                $('.com-chilipeppr-widget-gcode-toolchange-additionalContent').removeClass('hidden').load(additionalContent);
             }
             $(window).trigger('resize');
             var line = this.currentLine;
