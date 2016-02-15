@@ -950,10 +950,6 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                 $(".com-chilipeppr-widget-gcode-toolchange-additionalContent").html('<iframe frameBorder="0" width="100%" src="' + additionalContent + '"></iframe>');
                 $('.com-chilipeppr-widget-gcode-toolchange-additionalContent').removeClass('hidden');
             }
-            if(additionalType == 'inline'){
-                $('.com-chilipeppr-widget-gcode-toolchange-additionalContent').load('#' + additionalContent);
-                $('.com-chilipeppr-widget-gcode-toolchange-additionalContent').removeClass('hidden');
-            }
             else {
                 $('.com-chilipeppr-widget-gcode-toolchange-additionalContent').addClass('hidden');
             }
