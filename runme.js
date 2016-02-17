@@ -26,8 +26,8 @@ var mimeTypes = {
 http.createServer(function(req, res) {
 
   var uri = url.parse(req.url).pathname;
-  console.log("URL being requested:", uri, res);
-  
+  console.log("URL being requested:", uri);
+
   if (uri == "/") {
 
     res.writeHead(200, {
@@ -55,6 +55,11 @@ http.createServer(function(req, res) {
 
   } 
   else if (uri == "/pushtogithub") {
+
+    if(req.method=='GET') {
+        var url_parts = url.parse(req.url,true);
+        console.log(url_parts.query);
+    }
     
     console.log("/pushtogithub called");
     
