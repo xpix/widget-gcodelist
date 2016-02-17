@@ -666,10 +666,12 @@ var generateWidgetDocs = function() {
       $(function() {
       
       function ajaxPushToGithub() {
+        var message = prompt("Please enter your push message", "");
         console.log("pushing to github...");
-        $('.ajax-results').removeClass('hidden').html("Pushing your changes to Github");
+          $('.ajax-results').removeClass('hidden').html("Pushing your changes to Github");
         $.ajax({
-          url: "pushtogithub"
+          url: "pushtogithub",
+          data: { message: message }
         })
         .done(function( data ) {
           if ( console && console.log ) {
