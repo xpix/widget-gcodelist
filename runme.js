@@ -56,14 +56,12 @@ http.createServer(function(req, res) {
   } 
   else if (uri == "/pushtogithub") {
 
-    if(req.method=='GET') {
-        var url_parts = url.parse(req.url,true);
-        console.log(url_parts.query);
-    }
-    
+      var url_parts = url.parse(req.url,true);
+      console.log(url_parts.query);
+
     console.log("/pushtogithub called");
     
-    var stdout = pushToGithubSync()
+    var stdout = pushToGithubSync(url_parts.query.message)
     
     var json = {
       success: true,
@@ -1141,16 +1139,19 @@ var pushToGithub = function() {
   console.log("Pushed to github");
 }
 
-var pushToGithubSync = function() {
+var pushToGithubSync = function(message) {
   
   var proc = require('child_process');
+
+  if(! message)
+    message = "Made some changes to ChiliPeppr widget using Cloud9";
   
   // git add *
   // git commit -m "Made some changes to ChiliPeppr widget using Cloud9"
   // git push
   var stdout = "";
   stdout += "> git add *\n";
-  stdout += '> git commit -m "Made some changes to ChiliPeppr widget using Cloud9"\n';
+  stdout += '> git commit -m "' + message + '"\n';
   stdout += "> git push\n";
   stdout += proc.execSync('git add *; git commit -m "Made some changes to ChiliPeppr widget using Cloud9"; git push;', { encoding: 'utf8' });
   console.log("Pushed to github sync. Stdout:", stdout);
