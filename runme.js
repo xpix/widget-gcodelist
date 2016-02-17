@@ -26,7 +26,7 @@ var mimeTypes = {
 http.createServer(function(req, res) {
 
   var uri = url.parse(req.url).pathname;
-  console.log("URL being requested:", uri);
+  console.log("URL being requested:", uri, res);
   
   if (uri == "/") {
 
