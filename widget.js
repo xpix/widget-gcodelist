@@ -2408,7 +2408,10 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                     if (linegcode.match(/M0?6/i) && this.options.pauseOnM6) {
                         // Search for a url or widget entry
                         var parsed = linegcode.match(/(url|inline):(\S+)\-\-/);
-                        this.showToolChangeModal(parsed[1], parsed[2]); // type, content
+                        if(parsed.length > 1)
+                            this.showToolChangeModal(parsed[1], parsed[2]); // type, content
+                        else
+                            this.showToolChangeModal();
                     }
                     
                     // see if chilipeppr_pause command
