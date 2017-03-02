@@ -165,6 +165,39 @@ cprequire_test(["inline:com-chilipeppr-widget-gcode"], function (gcode) {
     // force widget to set width to test css
     $('#com-chilipeppr-widget-gcodeviewer').css('width', '350px');
     $('body').css('padding', '20px');
+    
+    // test out the /onPlay and interrupting it
+    var testOnPlayInterrupt = function() {
+        var isDoInterrupt = true;
+        chilipeppr.subscribe("/com-chilipeppr-widget-gcode/onplay", this, function(event) {
+            console.log("got onPlay pubsub test for interrupt. event: ", event);
+            
+            if (isDoInterrupt) {
+            
+                console.log("onPlay pubsub test. CANCELLING EVENT.");
+                // then send a new /play about 5 seconds later to mimic an async interrupt
+                setTimeout(function() {
+                    // pretend we threw up a dialog box, let the user choose stuff, and then they move along
+                    // we have to mimic the user is hitting play to start the process again
+                    chilipeppr.publish("/com-chilipeppr-widget-gcode/play", event);
+                }, 5000);
+                
+                // set to false so next time in, we don't cancel
+                isDoInterrupt = false;
+            
+                // return false to cancel all subsequent calls
+                return false;
+            } else {
+                
+                // we get here after we resend the /play signal to the Gcode widget. when it gets that
+                // it starts the process again of a play and we should let it continue on since we already
+                // did our important work
+                console.log("onPlay pubsub test. Now allowing play to continue on.")
+                return true;
+            }
+        });
+    };
+    // testOnPlayInterrupt();
 
 } /*end_test*/ );
 
@@ -176,10 +209,11 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
         fiddleurl: "(auto fill by runme.js)", // The edit URL. This can be auto-filled by runme.js in Cloud9 if you'd like, or just define it on your own to help people know where they can edit/fork your widget
         githuburl: "(auto fill by runme.js)", // The backing github repo
         testurl: "(auto fill by runme.js)",   // The standalone working widget so can view it working by itself
-        name: "Widget / Gcode v3",
+        name: "Widget / Gcode v8",
         desc: "The Gcode widget shows you the Gcode loaded into your workspace, lets you send it to the serial port, get back per line status, see an estimated length of time to execute the Gcode, navigate to the XYZ position of a specific line, and much more.",
         publish: {
-            '/onplay': "When user hits play button",
+            // '/onplay': "When user hits play button",
+            '/onplay': "When user hits play button. This is fired before this widget starts playing to give subscribers a chance to cancel the play, or delay it, or interrupt it. Payload contains {gcodeLines:(array of gcode lines)}. For example, the Cayenn widget listens for this signal and interrupts you if there are Cayenn commands in your Gcode so it can send a ResetCtr to all Cayenn devices. The Cayenn widget needs to send all the resets before ChiliPeppr is allowed to play to make sure everything is in sync. Return a false from your subscribe callback to cancel the play.",
             '/onpause': "When user hits pause button. The payload is a true/false boolean indicating whether it is a pause or an unpause. This event also fires if a pause is triggered for a different reason like from an M6 command. In that case the 2nd paramater of the payload contains a string of \"m6\".",
             '/onstop': "When user hits stop button",
             '/resize' : "When we resize in case any other widget wants to listen to that so it can resize itself.",
@@ -209,14 +243,14 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
         },
         fileLines: [], // contains the gcode file as array per line
         metaLines: [], // stores meta data related to each line in fileLines
-        metaObj: {
+        metaObj: { // Default meta data object
+    	    isSent: false,
             isQueued: false,
             isWritten: false,
-            isCompleted: false,
+            isCompleted: false, // whether onComplete has processed it
             isError: false,
-            isExecuted: false,
-            isWillGetExecuted: false, // whether this type of line gets executed
-            id: null
+            isExecuted: false, // whether onExecute has processed it
+    	    isDisplayed: false // whether onComplete or onExecute has reacted to it
         },
         linesComplete: [],
         linesToShow: 50, // how many lines to show in the infinite scroll area
@@ -242,6 +276,11 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                 }
                     
             }
+            
+            // Added on 1/2/17 by JLauer so we can allow onPlay to get interrupted
+            // subscribe to our own /onPlay event at lowest priority so we get it last
+            // setting priority to 11 because default is 10 and lower values have higher priority
+            chilipeppr.subscribe("/com-chilipeppr-widget-gcode/onplay", this, this.onPlayAfter, 11);
             
             this.setupOptionsModal();
 
@@ -328,11 +367,171 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
             
             this.setupJumpToLine();
             
+            this.setupSecondaryButtons();
+            
             // get estimated time duration. request this after a few
             // seconds to give best chance of 3d viewer being loaded
             setTimeout(this.getEstimates.bind(this), 5000);
 
-            console.log("Widget Gcode v2 done loading.");
+            console.log(this.name + " done loading.");
+        },
+        /**
+         * Configure the "Feed Rate Override" button and the "Tool Changes" pulldown
+         */
+        setupSecondaryButtons: function() {
+            
+            // setup Feed Rate Override to toggle the actual region
+            $('.com-chilipeppr-widget-gcode-showfr').click(this.onToggleShowFeedRateOverride.bind(this));
+        },
+        onToggleShowFeedRateOverride: function() {
+            var btnEl = $('.com-chilipeppr-widget-gcode-showfr');
+            var regionEl = $('#com-chilipeppr-widget-gcode-feedrate');
+            if (btnEl.hasClass("active")) {
+                // it's showing, so hide it
+                regionEl.addClass("hidden");
+                // remove our active tag
+                btnEl.removeClass("active");
+            } else {
+                // it's hidden, so show it
+                regionEl.removeClass("hidden");
+                // show us as pressed in
+                btnEl.addClass("active");
+            }
+        },
+        /**
+         * This method scans the Gcode for tool changes and then populates the pulldown menu so
+         * you can easily jump to the changes in the file and continue where you left off.
+         */
+        toolChanges: {},
+        toolChangesKeys: [], // need to store keys in own array cuz keys in javascript are strings and we wants ints
+        toolComments: {},
+        setupToolChanges: function() {
+            
+            // scan gcode for tool change info
+            
+            console.log("about to look for tool changes in this.fileLines. lines:", this.fileLines.length);
+            
+            this.toolComments = {};
+            this.toolChanges = {};
+            this.toolChangesKeys = [];
+            
+            for (var i = 0; i < this.fileLines.length; i++) {
+                var line = this.fileLines[i];
+                
+                // see if we have line where comment starts with
+                // look for something like:
+                // (T1 D=3.175 CR=0. - ZMIN=-4.2 - FLAT END MILL)
+                if (line.match(/\(T(\d+)\s+(.*)\)/i)) {
+                    var toolNum = parseInt(RegExp.$1);
+                    var toolComment = "T" + toolNum + " " + RegExp.$2;
+                    console.log("found tool comment. lineNum:", i, "toolNum:", toolNum, "comment:", toolComment, "line:", line);
+                    this.toolComments[toolNum] = {
+                        lineNum: i+1,
+                        toolNum: toolNum,
+                        toolComment: toolComment,
+                    }
+                }
+                
+                // look for M6 line
+                if (line.match(/M6|M06|M006/i)) {
+                    var toolNum;
+                    if (line.match(/T(\d+)/i)) {
+                        toolNum = parseInt(RegExp.$1);
+                    }
+                    this.toolChanges[(i+1)] = {
+                        lineNum: i+1,
+                        toolNum: toolNum,
+                    };
+                    this.toolChangesKeys.push(i+1);
+                    console.log("found tool change. lineNum:", i, "line:", line);
+                }
+            }
+            
+            console.log("this.toolComments:", this.toolComments);
+            console.log("this.toolChanges:", this.toolChanges);
+            
+            // now look for a comment up to 10 lines above the M6 tool change line to see if any comments are there
+            var keys = this.toolChangesKeys; //Object.keys(this.toolChanges).sort();
+            console.log("looking for comments above m6 to get a label for this tool change. keys:", keys);
+            for (var i = 0; i < keys.length; i++) {
+                var toolChangeLineNum = keys[i];
+                var lookBackToLineNum = toolChangeLineNum - 10;
+                if (lookBackToLineNum < 1) lookBackToLineNum = 1; // first line
+                
+                // now look backwards until we've seen just 1 comment
+                for (var lineNum = toolChangeLineNum; lineNum >= lookBackToLineNum; lineNum--) {
+                    var line = this.fileLines[lineNum - 1]; // index of array is 1 less than lineNum
+                    console.log("looking at lineNum:", lineNum, "line:", line);
+                    // see if comment
+                    if ( line.match(/\((.*?)\)/) || line.match(/;(.*)/) ) {
+                        var comment = RegExp.$1;
+                        console.log("found comment:", comment);
+                        
+                        // stick comment into toolChanges
+                        this.toolChanges[toolChangeLineNum].sectionComment = comment;
+                        
+                        // break since we found one
+                        break;
+                    }
+                }
+            }
+            
+            console.log("after adding section comments. this.toolChanges:", this.toolChanges);
+            
+            // now populate the pulldown
+            var keys = this.toolChangesKeys; //Object.keys(this.toolChanges).sort();
+            var ddEl = $('.com-chilipeppr-widget-gcode-menuToolChange');
+            
+            // wipe menu
+            ddEl.html('<li role="presentation" class="dropdown-header com-chilipeppr-widget-gcode-toolchanges-hdr">Click the item below to jump to the line in the Gcode so you can start playing from there.</li>');
+            
+            if (keys.length == 0) {
+                // insert that no tool changes
+                var menuEl = $('<li role="presentation" class="dropdown-header com-chilipeppr-widget-gcode-toolchanges-hdr">(No Tool Changes in Gcode)</li>');
+            
+                ddEl.append(menuEl);   
+            }
+            
+            for (var i = 0; i < keys.length; i++) {
+                var toolChange = this.toolChanges[keys[i]];
+                var tool = this.toolComments[toolChange.toolNum];
+                
+                var str = "";
+                
+                if ('sectionComment' in toolChange) {
+                    str = str + '<span class="small" style="font-weight:bold;">' + toolChange.sectionComment + '</span><br>';
+                }
+
+                
+                str = str + "Tool " + toolChange.toolNum + " on line " + toolChange.lineNum;
+                
+                if (tool != null) {
+                    str = str + "<br>" + tool.toolComment;
+                }
+                
+                
+                var menuEl = $('<li><a class="" style="cursor:pointer;">' + str + '</a></li>');
+                menuEl.click(toolChange, this.onToolChangesSelectMenu.bind(this));
+                ddEl.append(menuEl);   
+                console.log("added Tool Changes menu item:", menuEl);
+            }
+            
+        },
+        /**
+         * Called when user clicks a Tool Changes menu item. They want to jump to that line.
+         */
+        onToolChangesSelectMenu: function(data) {
+            console.log("got click on Tool Changes menu. data:", data.data);
+            var toolInfo = data.data;
+            // u get data like: {lineNum: 11, toolNum: 1}
+            this.jumpToLine(toolInfo.lineNum);
+            
+        },
+        /**
+         * This method is called after the Gcode file is loaded so you can do some post-processing.
+         */
+        onAfterGcodeFileLoaded: function() {
+            this.setupToolChanges();
         },
         setupJumpToLine: function() {
             $('#com-chilipeppr-widget-gcode-jumptoline').click(this.onJumpToLine.bind(this));
@@ -347,8 +546,11 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                 lastLine = this.lastLineMarkedExecuted;
             
             var line = prompt("Please enter the line number to jump to.", lastLine);
-            
-            chilipeppr.publish("/com-chilipeppr-widget-gcode/jumpToLine", line);
+            var lineNum = parseInt(line);
+            if (lineNum > 0)
+                chilipeppr.publish("/com-chilipeppr-widget-gcode/jumpToLine", lineNum);
+            else
+                chilipeppr.publish("/com-chilipeppr-elem-flashmsg/flashmsg", "Error on Line Jump", "We had a problem parsing the line number you gave us.", 1000, true);
         },
         getEstimates: function() {
             var that = this;
@@ -421,9 +623,19 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                     if (!('addlinenums' in options))
                         options.addlinenums = true;
                 }
+                // Default new options for backwards compatibility
+                if (!('sendOnM6' in options)) {
+                    options.sendOnM6 = "";
+                }
+                if (!('sendOffM6' in options)) {
+                    options.sendOffM6 = "";
+                }
+                if (!('probeCmd' in options)) {
+                    options.probeCmd = "G28.2 Z0";
+                }
                 
             } else {
-                options = {whenPlay: "serial", perRow: "3d", perRow3dType: "goto", delayPerLine: this.delayPerLine, pauseOnM6: true, preUpload: 'none', multiLineMode: 'yes', multiLines: 50, ppsOnPlayFlush: false, ppsOnStopFeedhold: false, ppsOnPauseFeedhold: false, ppsOnUnpauseResume: false, removeemptylines: true, addlinenums: true};
+                options = {whenPlay: "serial", perRow: "3d", perRow3dType: "goto", delayPerLine: this.delayPerLine, pauseOnM6: true, preUpload: 'none', multiLineMode: 'yes', multiLines: 50, ppsOnPlayFlush: false, ppsOnStopFeedhold: false, ppsOnPauseFeedhold: false, ppsOnUnpauseResume: false, removeemptylines: true, addlinenums: true, sendOnM6: "", sendOffM6: "", probeCmd: "G28.2 Z0"};
             }
             this.options = options;
             console.log("options:", options);
@@ -446,6 +658,9 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                 $('#com-chilipeppr-widget-gcode-option-pauseOnM6').prop('checked', true);
                 $('#com-chilipeppr-widget-gcode-option-pauseOnM6-alt').prop('checked', true);
             }
+            $('#com-chilipeppr-widget-gcode-option-sendonM6').val(this.options.sendOnM6);
+            $('#com-chilipeppr-widget-gcode-option-sendoffM6').val(this.options.sendOffM6);
+            $('#com-chilipeppr-widget-gcode-option-probe-cmd').val(this.options.probeCmd);
 
             if (this.options.preUpload) {
                 var opt = ["none", "100", "1000", "10000", "20000"];
@@ -537,7 +752,7 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
             var that = this;
             console.log("saveOptionsModal");
 
-            var whenPlay, perRow, perRow3dType, delayPerLine, pauseOnM6, showBody, preUpload, multiLineMode, multiLines, ppsOnPlayFlush, ppsOnStopFeedhold, ppsOnPauseFeedhold, ppsOnUnpauseResume, removeemptylines, addlinenums;
+            var whenPlay, perRow, perRow3dType, delayPerLine, pauseOnM6, sendOnM6, sendOffM6, probeCmd, showBody, preUpload, multiLineMode, multiLines, ppsOnPlayFlush, ppsOnStopFeedhold, ppsOnPauseFeedhold, ppsOnUnpauseResume, removeemptylines, addlinenums;
             if ($('#com-chilipeppr-widget-gcode-option-whenplay-serial').is(':checked'))
                 whenPlay = "serial";
             else if ($('#com-chilipeppr-widget-gcode-option-whenplay-3d').is(':checked'))
@@ -554,6 +769,10 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                 pauseOnM6 = true;
             else
                 pauseOnM6 = false;
+            sendOnM6 = $('#com-chilipeppr-widget-gcode-option-sendonM6').val();
+            sendOffM6 = $('#com-chilipeppr-widget-gcode-option-sendoffM6').val();
+            probeCmd = $('#com-chilipeppr-widget-gcode-option-probe-cmd').val();
+        
             if ($('#com-chilipeppr-widget-gcode-option-removeemptylines').is(':checked'))
                 removeemptylines = true;
             else
@@ -594,6 +813,9 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                 perRow3dType: perRow3dType,
                 delayPerLine: that.delayPerLine,
                 pauseOnM6: pauseOnM6,
+                sendOnM6: sendOnM6,
+                sendOffM6: sendOffM6,
+                probeCmd: probeCmd,
                 showBody: showBody,
                 preUpload: preUpload,
                 multiLineMode: multiLineMode,
@@ -650,10 +872,13 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                 chilipeppr.publish('/com-chilipeppr-interface-cnccontroller/unEnergizeMotors', "");
             });
             $('.com-chilipeppr-widget-gcode-toolchange-probe').click(function() {
-                chilipeppr.publish("/com-chilipeppr-widget-serialport/send", 'G28.2 Z0\n');
+                chilipeppr.publish("/com-chilipeppr-widget-serialport/send", that.options.probeCmd + '\n');
             });
             $('.com-chilipeppr-widget-gcode-toolchange-sendgcode').click(function() {
                 chilipeppr.publish("/com-chilipeppr-widget-serialport/send", that.toolChangeRepositionCmd + '\n');
+            });
+            $('.com-chilipeppr-widget-gcode-toolchange-g43').click(function() {
+                chilipeppr.publish("/com-chilipeppr-widget-serialport/send", that.toolChangeCmd + '\n');
             });
             $('.com-chilipeppr-widget-gcode-toolchange-spindlestop').click(function() {
                 chilipeppr.publish("/com-chilipeppr-widget-serialport/send", 'M5\n');
@@ -663,16 +888,38 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
             });
 
             // close btn
-            $('.com-chilipeppr-widget-gcode-toolchange .close').click(this.hideToolChangeDiv.bind(this));
+            $('.com-chilipeppr-widget-gcode-toolchange .close').click(this.hideToolChangeDiv.bind(this, false));
 
         },
         isInToolChangeMode: false, // track whether we're showing tool change div
         toolChangeRepositionCmd: null, // gcode to reposition to prior location before tool change (in case they jog)
-        showToolChangeModal: function(additionalType, additionalContent) {
+        toolChangeCmd: null, // G43 command to change tool length offset
+        showToolChangeModal: function(linegcode, source) {
+
+	        var toolNumber = linegcode.match(/T\d+/ig)[0]
+            console.log("Switching to tool ",toolNumber);
+            if (!toolNumber)
+            {
+                toolNumber = "Unknown Tool";
+                this.toolChangeCmd = "G49";
+            }
+            else
+            {
+                this.toolChangeCmd = "G43 " + toolNumber.replace("T","H");
+            }
+            $('#com-chilipeppr-widget-gcode-toolnumber1').text(toolNumber);
+            $('#com-chilipeppr-widget-gcode-toolnumber2').text(toolNumber);
+            $('#com-chilipeppr-widget-gcode-g43-cmd').text(this.toolChangeCmd);
+            
+
             if ($('#com-chilipeppr-widget-gcode-option-pauseOnM6').is(':checked'))
                 $('#com-chilipeppr-widget-gcode-option-pauseOnM6-alt').prop('checked', true);
             else
-                $('#com-chilipeppr-widget-gcode-option-pauseOnM6-alt').prop('checked', false);
+                $('#com-chilipeppr-widget-gcode-option-pauseOnM6-alt').prop('checked',false);
+
+    	    if (false)
+    		    $('#com-chilipeppr-widget-gcode-toolchange-debug').text("Source: " +source);
+	    
             $('#com-chilipeppr-widget-gcode-toolchange-modal').modal('show');
 
             // setup div in main widget for when modal dismisses
@@ -690,10 +937,37 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                 $('.com-chilipeppr-widget-gcode-toolchange-additionalContent').addClass('hidden');
             }
             $(window).trigger('resize');
+            
+            // get active coords system and last position
             var line = this.currentLine;
             this.getXyzCoordsForLine(line, function(pos) {
-                this.toolChangeRepositionCmd = "G0 X" + pos.x + " Y" + pos.y + " Z" + pos.z;
-                $('.com-chilipeppr-widget-gcode-toolchange-cmd').text(this.toolChangeRepositionCmd);
+                console.log("getXyzCoordsForLine returned pos ", pos);
+
+                this.getCoordFromController(function(coords) {
+                    console.log("getCoordFromController returned coords ", coords);
+
+                    // now assemble the reposition command
+                    if (coords.coord)
+                    {
+                        this.toolChangeRepositionCmd = coords.coord;
+                    }
+                    else
+                    {
+                        this.toolChangeRepositionCmd = "";
+                    }
+                    this.toolChangeRepositionCmd = this.toolChangeRepositionCmd + " G0 X" + pos.x + " Y" + pos.y + " Z" + pos.z;
+                    
+                    $('.com-chilipeppr-widget-gcode-toolchange-reposition1').text(this.toolChangeRepositionCmd);
+                    $('.com-chilipeppr-widget-gcode-toolchange-reposition2').text(this.toolChangeRepositionCmd);
+
+                    // Send gcode if defined
+                    var sendOnM6 = $('#com-chilipeppr-widget-gcode-option-sendonM6').val();
+                    if (sendOnM6)
+                    {
+                        console.log("SendOnM6: ",sendOnM6);
+                        chilipeppr.publish("/com-chilipeppr-widget-serialport/send", sendOnM6 + '\n');
+                    }   
+                });
             });
 
             // get the current motor config, when we get callback, setup the "set motors to prev setting" btn
@@ -703,11 +977,24 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
             $('#com-chilipeppr-widget-gcode-toolchange-modal').modal('hide');
             $(window).trigger('resize');
         },
-        hideToolChangeDiv: function() {
+        hideToolChangeDiv: function(wasPaused) {
             console.log("hideToolChangeDiv");
             if (this.isInToolChangeMode) {
                 console.log("was in toolChangeMode");
                 this.isInToolChangeMode = false;
+                
+                if (wasPaused)
+                {
+                    // Send gcode if defined
+                    // @todo Should NOT do this if we stopped rather than paused
+                    var sendOffM6 = $('#com-chilipeppr-widget-gcode-option-sendoffM6').val();
+                    if (sendOffM6)
+                    {
+                        console.log("SendOffM6: ",sendOffM6);
+                        chilipeppr.publish("/com-chilipeppr-widget-serialport/send", sendOffM6 + '\n');
+                    }
+                }
+
                 $('#com-chilipeppr-widget-gcode-body').removeClass('gcode-short-mode');
                 $('.com-chilipeppr-widget-gcode-toolchange').addClass('hidden');
                 $(window).trigger('resize');
@@ -735,6 +1022,32 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                 txt = "G21\n"+ txt; //add G21 to first line of gcode file
             this.isDirtyUnits = true;
             this.onFileLoaded(txt,info,skipLocalStore); //send new txt to onFileLoaded
+        },
+        getCoordFromControllerRecvCallback: null,
+        getCoordFromController: function(callback) {
+            this.getCoordFromControllerRecvCallback = callback;
+            console.log("getCoordFromController");
+	    
+            chilipeppr.subscribe("/com-chilipeppr-interface-cnccontroller/coords",
+				 this, this.getCoordFromControllerRecv);
+            chilipeppr.publish("/com-chilipeppr-interface-cnccontroller/requestCoords", "");
+        },
+        getCoordFromControllerRecv: function(coords) {
+            // unsub so we don't get anymore callbacks on this
+            chilipeppr.unsubscribe("/com-chilipeppr-widget-cnccontroller/coords",
+				   this.getCoordFromControllerRecv);
+
+            if (this.getCoordFromControllerRecvCallback)
+            {
+                // call the callback and then null it so we only call it once
+                console.log("getCoordFromControllerRecv ", coords);
+                this.getCoordFromControllerRecvCallback(coords);
+                this.getCoordFromControllerRecvCallback = null;
+            }
+            else
+            {
+                console.log("GetCoordFromControllerRecv called with null callback... shouldn't happen")
+            }
         },
         getMotorConfigCallback: function(data) {
         },
@@ -892,7 +1205,7 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
             var that = this;
             chilipeppr.load("http://fiddle.jshell.net/chilipeppr/zMbL9/show/light/", function () {
                 require(['inline:com-chilipeppr-elem-pubsubviewer'], function (pubsubviewer) {
-                    pubsubviewer.attachTo($(topCssSelector + ' .panel-heading .dropdown-menu'), that);
+                    pubsubviewer.attachTo($(topCssSelector + ' .panel-heading .pubsub-dropdown-menu'), that);
                 });
             });
 
@@ -1275,7 +1588,7 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
         },
         onStepBack: function(evt) {
             console.log("onStepBack. ");
-            if (evt) this.hideToolChangeDiv();
+            if (evt) this.hideToolChangeDiv(false);
             this.currentLine = this.currentLine - 2;
             if (this.currentLine < 0) this.currentLine = 0;
             this.isPlayStep = true;
@@ -1283,7 +1596,7 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
         },
         onStepFwd: function(evt) {
             console.log("onStepFwd");
-            if (evt) this.hideToolChangeDiv();
+            if (evt) this.hideToolChangeDiv(false);
             this.isPlayStep = true;
             this.onPlayNextLine();
         },
@@ -1293,7 +1606,7 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                 this.isPaused = false;
                 $('#com-chilipeppr-widget-gcode-pause').removeClass("active");
 
-                if (event) this.hideToolChangeDiv();
+                if (event) this.hideToolChangeDiv(true);
 
                 if (event && this.options.ppsOnUnpauseResume)
                     chilipeppr.publish("/com-chilipeppr-widget-serialport/send", "~\n");
@@ -1335,12 +1648,7 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
             for (; indx < this.metaLines.length; indx++) {
                 if (that.metaLines[indx] != null) {
                     console.log("found metaLine. resetting. indx:", indx);
-                    that.metaLines[indx].isSent = false;
-                    that.metaLines[indx].isQueued = false;
-                    that.metaLines[indx].isWritten = false;
-                    that.metaLines[indx].isCompleted = false;
-                    that.metaLines[indx].isError = false;
-                    that.metaLines[indx].isExecuted = false;
+		    that.metaLines[indx] = $.extend({}, that.metaObj);
                     // this will update the UI, but only for showing lines
                     that.updateRowQueueStats(indx + 1);
                 }
@@ -1354,7 +1662,7 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                 $('#com-chilipeppr-widget-gcode-play').prop("disabled", false);
                 $('#com-chilipeppr-widget-gcode-stop').prop("disabled", true);
                 $('#com-chilipeppr-widget-gcode-pause').prop("disabled", true);
-                this.hideToolChangeDiv();
+                this.hideToolChangeDiv(false);
 
                 this.isPlaying = false;
                 this.isPaused = false;
@@ -1366,7 +1674,7 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                     $('#com-chilipeppr-widget-gcode-play').prop("disabled", false);
                     $('#com-chilipeppr-widget-gcode-stop').prop("disabled", true);
                     $('#com-chilipeppr-widget-gcode-pause').prop("disabled", true);
-                    this.hideToolChangeDiv();
+                    this.hideToolChangeDiv(false);
                 }
                 
                 this.isPlaying = false;
@@ -1399,12 +1707,38 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
             this.feedrateEnable();
             
         },
+        /**
+         * The onPlay is called from the Play button (or other mechanism) and as of 1/2/17 it
+         * now fires off the /onPlay pubsub so that a Play can get interrupted. It then listens to it's own
+         * /onPlay publish event at the lowest priority so that it can play as the last step in the pubsub chain.
+         * This gives other widgets a chance to interrupt the play event.
+         */
+        onPlay: function(event) {
+            
+            console.log("got onPlay. this:", this, "event:", event);
+            
+            // indicate we're starting play in the UI
+            $('.com-chilipeppr-widget-gcode-startindicator').removeClass("hidden");
+            
+            // fire off pubsub signal for others to watch the play btn
+            var meta = { isPlayByUser: event ? true : false };
+            meta.gcodeLines = this.fileLines;
+            chilipeppr.publish("/com-chilipeppr-widget-gcode/onplay", meta);
+
+        },
         isResetMetaBeforePlay: false, // this is set to true after a play has been completed and done all the way to the end. usually we reset the meta data when user hits stop, but we want to let the user know all lines were completed after their job was done so we don't reset. however, if they hit play again we need to reset
         isJobDonePubSubSent: false, // track this so that we don't fire the end of job pubsub event more than once. this was needed because you could sleep your laptop after a job done, then unsleep, reconnect to cnc controller, get the line complete status again, and think the job just got done when it clearly didn't
-        onPlay: function (event) {
+        /**
+         * This is now called from pubsub, which means we publish our own /onPlay event when user hits button and then listen
+         * for the callback so that other widgets can interrupt the /onPlay if they have to. We get called last because
+         * we subscribe at the lowest priority.
+         */
+        onPlayAfter: function (event) {
             // loop thru each line and send gcode
-            console.log("got onPlay. this:", this, "event:", event);
+            console.log("got onPlayAfter. this:", this, "event:", event);
             //console.log(event);
+
+            $('.com-chilipeppr-widget-gcode-startindicator').addClass("hidden");
 
             // this is set to true after a play has been completed and done 
             // all the way to the end. usually we reset the meta data when 
@@ -1485,9 +1819,13 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                 this.onPlayNextLine();
             }
 
+            // commented out on 1/2/17 by JLauer because we now fire this off before any play action occurs
+            // so others can interrupt
+            /*
             // fire off pubsub signal for others to watch the play btn
             var meta = { isPlayByUser: event ? true : false };
             chilipeppr.publish("/com-chilipeppr-widget-gcode/onplay", meta);
+            */
             
             return true;
         },
@@ -1726,7 +2064,7 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                     this.gotoLine(this.currentLine, true);
                     // pass a null event, but true for the isFromM6 parameter
                     this.onPause(null, true);
-                    //this.showToolChangeModal();
+                    //this.showToolChangeModal(linegcode,"onplay");
                     // sync gcode list view
                     //if (!this.isPlayNextLineNoScroll)
                     // dont' go to next line, just return
@@ -2008,7 +2346,7 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                     if (e.name === 'QUOTA_EXCEEDED_ERR' || e.name == "QuotaExceededError" || e.code == 22 || e.name == "NS_ERROR_DOM_QUOTA_REACHED" || e.code == 1014) {
                         //this.sceneRemove(this.object);
                         // show err dialog
-                        $('#com-chilipeppr-widget-gcode-outofspace').modal();
+                        // $('#com-chilipeppr-widget-gcode-outofspace').modal();
                         console.error("Gcode Widget. out of local storage space, but letting user proceed. err:", e);
                         
                     } else {
@@ -2032,15 +2370,24 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                 // seconds to give best chance of 3d viewer being loaded
                 setTimeout(this.getEstimates.bind(this), 1000);
                 
+                // now call our post opening call
+                console.log("tool change will get called in 3.5secs");
+                setTimeout(this.onAfterGcodeFileLoaded.bind(this), 1500);
+
                 // we return false to tell pubsub that no further
                 // listeners should parse this onDropped because we just
                 // reissued it
                 return false;
-            }
+            } else {
             
-            // get estimated time duration. request this after a few
-            // seconds to give best chance of 3d viewer being loaded
-            setTimeout(this.getEstimates.bind(this), 1000);
+                // get estimated time duration. request this after a few
+                // seconds to give best chance of 3d viewer being loaded
+                setTimeout(this.getEstimates.bind(this), 1000);
+                
+                // now call our post opening call
+                console.log("tool change will get called in 3.5secs");
+                setTimeout(this.onAfterGcodeFileLoaded.bind(this), 1500);
+            }
         },
         resendGcodeToWorkspace: function() {
             // we need to send this gcode file back to the workspace
@@ -2266,7 +2613,7 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                     // update meta data
                     if (this.metaLines[idnum - 1] == null) {
                         //console.log("no meta data for this element yet. creating it.");
-                        this.metaLines[idnum - 1] = { isSent: true };
+                        this.metaLines[idnum - 1] = $.extend({}, this.metaObj);
                     }
                     
                     // set that it is queued
@@ -2305,7 +2652,7 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                 // update meta data
                 if (this.metaLines[idnum - 1] == null) {
                     //console.log("onQueue. no meta data for this element yet. creating it.");
-                    this.metaLines[idnum - 1] = { isQueued: true };
+                    this.metaLines[idnum - 1] = $.extend({}, this.metaObj);
                 }
 
                 // set that it is queued
@@ -2342,7 +2689,7 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                 // update meta data
                 if (this.metaLines[idnum - 1] == null) {
                     //console.log("no meta data for this element yet. creating it.");
-                    this.metaLines[idnum - 1] = { isWritten: true };
+                    this.metaLines[idnum - 1] = $.extend({}, this.metaObj);
                 }
 
                 // set that it is queued
@@ -2356,6 +2703,37 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
             }
             //console.groupEnd();
         },
+	displayLine: function(index, chilipepprPauseFun) {
+	    // Only do this if not done already
+            if (this.metaLines[index].isDisplayed)
+		return;
+
+	    this.metaLines[index].isDisplayed = true;			
+	    
+            // see if comment
+            var linegcode = this.fileLines[index];
+            if (linegcode.match(/(\(.*\)|;.*$)/)) {
+                // it's comment
+                //var re = /\((.*)\)/;
+                //re.exec(linegcode);
+                var comment = RegExp.$1;
+                console.log("Found comment:", comment);
+                chilipeppr.publish("/com-chilipeppr-elem-flashmsg/flashmsg", "Gcode Comment", comment, 3000, true);
+            }
+                    
+            // see if M6 tool change command & user wants to pause on M6
+            if (linegcode.match(/M0?6/i) && this.options.pauseOnM6) {
+                this.showToolChangeModal(linegcode,
+					 String(index)+" "+JSON.stringify(this.metaLines[index]));
+            }
+                    
+            // see if chilipeppr_pause command
+            if (linegcode.match(/chilipeppr_pause/i)) {
+                chilipepprPauseFun(
+                    { line: index + 1, gcode: linegcode } 
+                );
+            }
+	},	    
         onComplete: function(data) {
             // write it to the log
             //console.group("gcode widget - onComplete");
@@ -2378,7 +2756,7 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                 // update meta data
                 if (this.metaLines[idnum - 1] == null) {
                     //console.log("no meta data for this element yet. creating it.");
-                    this.metaLines[idnum - 1] = { isCompleted: true };
+                    this.metaLines[idnum - 1] = $.extend({}, this.metaObj);
                 }
 
                 // set that it is queued
@@ -2390,8 +2768,13 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                 this.updateRowQueueStats(idnum);
                 
                 // let user follow along on completes
-                if (!this.isInExecuteScrollToMode) {
+		
+                if (!this.isInExecuteScrollToMode &&
+		    !this.metaLines[idnum - 1].isDisplayed) {
+
                     this.gotoLine(idnum, true);
+
+                    this.displayLine(idnum - 1, this.onChiliPepprPauseOnComplete);
                     
                     // see if comment
                     var linegcode = this.fileLines[idnum -1];
@@ -2470,7 +2853,7 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                 // update meta data
                 if (this.metaLines[idnum - 1] == null) {
                     //console.log("no meta data for this element yet. creating it.");
-                    this.metaLines[idnum - 1] = { isError: true };
+                    this.metaLines[idnum - 1] = $.extend({}, this.metaObj);
                 }
 
                 // set that it is error
@@ -2499,7 +2882,7 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                     // see if M6 tool change command & user wants to pause on M6
                     //(just because controller errored out, user is still expecting a pause on M6 from the software)
                     if (linegcode.match(/M0?6/i) && this.options.pauseOnM6) {
-                        this.showToolChangeModal();
+                        this.showToolChangeModal(linegcode, "onerror");
                     }
 
                     // see if we're done sending
@@ -2538,6 +2921,8 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
             // write it to the log
             //console.group("gcode widget - onExecute");
             console.log("onExecute data:", data);
+            console.log("onExecute lastLineMarkedExecuted:", this.lastLineMarkedExecuted,
+                " isInExecuteScrollToMode:", this.isInExecuteScrollToMode);
             
             // we can get onExecute methods called on first load
             // because they come in from sr commands, so if we're not
@@ -2546,11 +2931,17 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                 //console.groupEnd();
                 return;
             }
+
+            // if we get something lower than our start, which is 1
+            // just ignore it. Need to do this before setting
+            // isInExecuteScrollToMode below or we'll think that we
+            // need to handle events we don't
+            var item = data;
+            if ('line' in item && item.line < 1) return;
             
             // make sure we're in onExecuted mode
             this.isInExecuteScrollToMode = true;
             
-            var item = data;
             var msgEl;
             // check that id string is not null/empty and starts with
             // a g, cuz we make all our id's start with g
@@ -2561,23 +2952,16 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                 // get id
                 var idnum = item.line;
                 
-                // if we get something lower than our start, which is 1
-                // just ignore it
-                if (idnum < 1) return;
-                
                 // ok, here's the deal, we only get status intervals every
                 // 250ms, which means we'll get a line number that could be
                 // many numbers beyond the last line we marked as "executed"
                 // so we have to fill in the gaps
-                if (this.lastLineMarkedExecuted == null)
-                    this.lastLineMarkedExecuted = 0;
                 
-                //console.log("onExecute. lastLineMarkedExecuted:", this.lastLineMarkedExecuted);
                 for (var markIndex = this.lastLineMarkedExecuted; markIndex < idnum; markIndex++) {
                     //console.log("onExecute. marking metaline as executed. markIndex:", markIndex, "metaLine:", this.metaLines[markIndex]);
                     if (this.metaLines[markIndex] == null) {
                         //console.log("onExecute no meta data for this element yet. creating it.");
-                        this.metaLines[markIndex] = { isExecuted: true };
+                        this.metaLines[markIndex] = $.extend({}, this.metaObj);
                     }
                     
                     // set that it is queued
@@ -2587,47 +2971,14 @@ cpdefine("inline:com-chilipeppr-widget-gcode", ["chilipeppr_ready", "waypoints",
                     // send in 1-based number, not 0-based
                     // our id is 1-based, i.e. the row number
                     this.updateRowQueueStats(markIndex + 1);
-                    
-                    // see if comment
-                    var linegcode = this.fileLines[markIndex];
-                    if (linegcode.match(/(\(.*\)|;.*$)/)) {
-                        // it's comment
-                        //var re = /\((.*)\)/;
-                        //re.exec(linegcode);
-                        var comment = RegExp.$1;
-                        //console.log("onExecute. Found comment:", comment);
-                        chilipeppr.publish("/com-chilipeppr-elem-flashmsg/flashmsg", "Gcode Comment", comment, 3000, true);
-                    }
-                    
-                    // see if M6 tool change command & user wants to pause on M6
-                    if (linegcode.match(/M0?6/i) && this.options.pauseOnM6) {
-                        this.showToolChangeModal();
-                    }
-                    
-                    // see if chilipeppr_pause command
-                    if (linegcode.match(/chilipeppr_pause/i)) {
-                        this.onChiliPepprPauseOnExecute(
-                            { line: markIndex + 1, gcode: linegcode } 
-                        );
-                    }
-                    
+
+		    // Act on line, if applicable
+                    this.displayLine(markIndex, this.onChiliPepprPauseOnExecute);
+
                     //console.log("metaLine after:", this.metaLines[markIndex]);
                 }
                 this.lastLineMarkedExecuted = markIndex;
-                
-                /*
-                // update meta data
-                if (this.metaLines[idnum - 1] == null) {
-                    //console.log("onExecute no meta data for this element yet. creating it.");
-                    this.metaLines[idnum - 1] = { isExecuted: true };
-                }
 
-                // set that it is queued
-                this.metaLines[idnum - 1].isExecuted = true;
-                */
-                
-                
-                
                 // let user follow along on completes
                 this.gotoLine(idnum, true);
                 
