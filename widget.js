@@ -3,10 +3,10 @@ requirejs.config({
     paths: {
         //jqueryui: '//chilipeppr.com/js/jquery-ui-1.10.4/ui/minified/jquery.ui.core.min',
         //jqueryuiResizeable: '//chilipeppr.com/js/jquery-ui-1.10.4/ui/minified/jquery.ui.resizable.min',
-        jqueryui: '//i2dcui.appspot.com/js/jquery-ui-1.10.4/ui/jquery.ui.core',
-        jqueryuiWidget: '//i2dcui.appspot.com/js/jquery-ui-1.10.4/ui/jquery.ui.widget',
-        jqueryuiMouse: '//i2dcui.appspot.com/js/jquery-ui-1.10.4/ui/jquery.ui.mouse',
-        jqueryuiResizeable: '//i2dcui.appspot.com/js/jquery-ui-1.10.4/ui/jquery.ui.resizable',
+        //jqueryui: '//i2dcui.appspot.com/js/jquery-ui-1.10.4/ui/jquery.ui.core',
+        //jqueryuiWidget: '//i2dcui.appspot.com/js/jquery-ui-1.10.4/ui/jquery.ui.widget',
+        //jqueryuiMouse: '//i2dcui.appspot.com/js/jquery-ui-1.10.4/ui/jquery.ui.mouse',
+        //jqueryuiResizeable: '//i2dcui.appspot.com/js/jquery-ui-1.10.4/ui/jquery.ui.resizable',
         waypoints: '//cdnjs.cloudflare.com/ajax/libs/waypoints/2.0.4/waypoints.min',
         //jqueryWaypointsInfinite: '//cdnjs.cloudflare.com/ajax/libs/waypoints/2.0.4/waypoints-infinite.min'
     },
